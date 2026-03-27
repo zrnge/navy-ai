@@ -220,8 +220,9 @@ class SessionManager:
 
 # --- CLI Config ---
 def _load_models_config() -> dict:
-    """Load models.json. Checks CWD first, then the script/package directory."""
-    search_dirs = [os.getcwd(), os.path.dirname(os.path.abspath(__file__))]
+    """Load models.json. Checks CWD, ~/.config/navy/, then the script/package directory."""
+    _home_cfg = os.path.join(os.path.expanduser("~"), ".config", "navy")
+    search_dirs = [os.getcwd(), _home_cfg, os.path.dirname(os.path.abspath(__file__))]
     for d in search_dirs:
         path = os.path.join(d, "models.json")
         try:
@@ -255,8 +256,9 @@ def _cli_config():
         "audit_log": os.path.join(_runtime_dir, "navy_audit.log"),
         "sessions_dir": os.path.join(_runtime_dir, "navy_sessions"),
     }
-    # Check CWD first for config.json, then script directory
-    for _dir in (_cwd, _script_dir):
+    # Check CWD, ~/.config/navy/, then script directory
+    _home_cfg = os.path.join(os.path.expanduser("~"), ".config", "navy")
+    for _dir in (_cwd, _home_cfg, _script_dir):
         path = os.path.join(_dir, "config.json")
         try:
             if os.path.isfile(path):
@@ -988,11 +990,13 @@ def cli_entry():
     args = parser.parse_args()
 
     if not args.model:
+        _cfg_path = os.path.join(os.path.expanduser("~"), ".config", "navy", "models.json")
         console.print(
             "[red]No model configured.[/]\n"
-            "[yellow]Option 1:[/] pass [cyan]--model <name>[/]  e.g.  [dim]navy --model qwen2.5:14b 'hi'[/]\n"
-            "[yellow]Option 2:[/] create [cyan]models.json[/] in your current directory with a [dim]\"default\"[/] key.\n"
-            "          Download the template: https://github.com/Zrnge/navy-ai/blob/master/models.json"
+            f"[yellow]Option 1 (recommended):[/] create [cyan]{_cfg_path}[/]\n"
+            "          Download the template from: https://github.com/Zrnge/navy-ai/blob/master/models.json\n"
+            "[yellow]Option 2:[/] pass [cyan]--model <name>[/]  e.g.  [dim]navy --model qwen2.5:14b 'hi'[/]\n"
+            "[yellow]Option 3:[/] place [cyan]models.json[/] in your current working directory."
         )
         sys.exit(1)
 
