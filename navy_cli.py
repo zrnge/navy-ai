@@ -352,6 +352,16 @@ class NavyCLI:
                 raise RuntimeError("Anthropic selected but no API key. Set api_key in models.json providers.anthropic or set ANTHROPIC_API_KEY env var.")
             self._anthropic_client = _anthropic_mod.Anthropic(api_key=key)
 
+        else:  # ollama
+            if not OLLAMA_AVAILABLE:
+                raise RuntimeError(
+                    f"Model '{self.model}' was detected as an Ollama model (contains ':') "
+                    "but the 'ollama' package is not installed.\n"
+                    "  pip install ollama\n"
+                    "If this is not an Ollama model, specify the provider explicitly via --model "
+                    "or set the correct name (e.g. a cloud API model without ':' in the name)."
+                )
+
     def switch_model(self, new_model: str) -> bool:
         new_model = _resolve_model_alias(new_model.strip(), self.models_cfg)
         if not new_model:
