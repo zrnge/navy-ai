@@ -38,6 +38,8 @@
     "opus":    "claude-opus-4-5",
     "haiku":   "claude-haiku-4-5",
 
+    "kimi":    "kimi-k2.5:cloud",
+
     "qwen7":   "qwen2.5:7b",
     "qwen14":  "qwen2.5:14b",
     "qwen32":  "qwen2.5:32b",

@@ -240,7 +240,7 @@ def _resolve_model_alias(name: str, models_cfg: dict) -> str:
 def _cli_config():
     _dir = os.path.dirname(os.path.abspath(__file__))
     models_cfg = _load_models_config()
-    default_model = models_cfg.get("default") or "qwen2.5:14b"
+    default_model = models_cfg.get("default") or ""
 
     out = {
         "tool_output_truncate": 2000,
