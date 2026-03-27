@@ -220,14 +220,16 @@ class SessionManager:
 
 # --- CLI Config ---
 def _load_models_config() -> dict:
-    """Load models.json. Returns the parsed dict or a safe default."""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models.json")
-    try:
-        if os.path.isfile(path):
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception as e:
-        log.warning("Could not load models.json: %s", e)
+    """Load models.json. Checks CWD first, then the script/package directory."""
+    search_dirs = [os.getcwd(), os.path.dirname(os.path.abspath(__file__))]
+    for d in search_dirs:
+        path = os.path.join(d, "models.json")
+        try:
+            if os.path.isfile(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception as e:
+            log.warning("Could not load models.json from %s: %s", path, e)
     return {"default": "", "providers": {}, "presets": {}}
 
 
@@ -238,7 +240,10 @@ def _resolve_model_alias(name: str, models_cfg: dict) -> str:
 
 
 def _cli_config():
-    _dir = os.path.dirname(os.path.abspath(__file__))
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    _cwd = os.getcwd()
+    # Use CWD for runtime files so pip-installed users aren't writing into site-packages
+    _runtime_dir = _cwd
     models_cfg = _load_models_config()
     default_model = models_cfg.get("default") or ""
 
@@ -247,24 +252,26 @@ def _cli_config():
         "max_turns": 15,
         "default_ctx": 32768,
         "default_model": default_model,
-        "audit_log": os.path.join(_dir, "navy_audit.log"),
-        "sessions_dir": os.path.join(_dir, "navy_sessions"),
+        "audit_log": os.path.join(_runtime_dir, "navy_audit.log"),
+        "sessions_dir": os.path.join(_runtime_dir, "navy_sessions"),
     }
-    try:
+    # Check CWD first for config.json, then script directory
+    for _dir in (_cwd, _script_dir):
         path = os.path.join(_dir, "config.json")
-        if os.path.isfile(path):
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data.get("cli"), dict):
-                for k, v in data["cli"].items():
-                    if k in out and v is not None:
-                        # Resolve relative paths to absolute
-                        if k in ("audit_log", "sessions_dir") and not os.path.isabs(str(v)):
-                            out[k] = os.path.join(_dir, str(v))
-                        else:
-                            out[k] = v
-    except Exception:
-        pass
+        try:
+            if os.path.isfile(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data.get("cli"), dict):
+                    for k, v in data["cli"].items():
+                        if k in out and v is not None:
+                            if k in ("audit_log", "sessions_dir") and not os.path.isabs(str(v)):
+                                out[k] = os.path.join(_dir, str(v))
+                            else:
+                                out[k] = v
+                break  # stop at the first config.json found
+        except Exception:
+            pass
     for env_key, cfg_key in (
         ("NAVY_TOOL_TRUNCATE", "tool_output_truncate"),
         ("NAVY_MAX_TURNS", "max_turns"),
@@ -979,6 +986,15 @@ def cli_entry():
     parser.add_argument("--ctx", type=int, default=_cfg["default_ctx"])
     parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompts")
     args = parser.parse_args()
+
+    if not args.model:
+        console.print(
+            "[red]No model configured.[/]\n"
+            "[yellow]Option 1:[/] pass [cyan]--model <name>[/]  e.g.  [dim]navy --model qwen2.5:14b 'hi'[/]\n"
+            "[yellow]Option 2:[/] create [cyan]models.json[/] in your current directory with a [dim]\"default\"[/] key.\n"
+            "          Download the template: https://github.com/Zrnge/navy-ai/blob/master/models.json"
+        )
+        sys.exit(1)
 
     try:
         cli = NavyCLI(model=args.model, ctx_size=args.ctx, skip_confirm=args.yes)
