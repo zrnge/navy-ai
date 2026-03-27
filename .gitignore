@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Navy runtime files
+navy_audit.log
+navy_sessions/
+.navy_history
+
+# Environment / secrets
+.env
+*.env
+
+# IDE
+.vscode/
+.idea/

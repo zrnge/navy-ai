@@ -1,0 +1,51 @@
+{
+  "_comment": "Navy model configuration. Set your API keys here or via environment variables.",
+
+  "default": "kimi-k2.5:cloud",
+
+  "providers": {
+    "_comment": "API keys for cloud providers. Leave empty string to use environment variables instead.",
+
+    "gemini": {
+      "api_key": "",
+      "_api_key_env": "GEMINI_API_KEY"
+    },
+    "openai": {
+      "api_key": "",
+      "_api_key_env": "OPENAI_API_KEY"
+    },
+    "anthropic": {
+      "api_key": "",
+      "_api_key_env": "ANTHROPIC_API_KEY"
+    }
+  },
+
+  "presets": {
+    "_comment": "Short aliases you can use instead of full model names. e.g. 'model fast' switches to gemini-1.5-flash.",
+
+    "flash":   "gemini-1.5-flash",
+    "pro":     "gemini-1.5-pro",
+    "2flash":  "gemini-2.0-flash",
+    "2pro":    "gemini-2.0-pro",
+
+    "gpt4o":   "gpt-4o",
+    "gpt4m":   "gpt-4o-mini",
+    "o1":      "o1",
+    "o3":      "o3",
+    "o4":      "o4-mini",
+
+    "sonnet":  "claude-sonnet-4-5",
+    "opus":    "claude-opus-4-5",
+    "haiku":   "claude-haiku-4-5",
+
+    "qwen7":   "qwen2.5:7b",
+    "qwen14":  "qwen2.5:14b",
+    "qwen32":  "qwen2.5:32b",
+    "qwen72":  "qwen2.5:72b",
+    "code":    "deepseek-coder-v2:16b",
+    "ds":      "deepseek-r1:14b",
+    "llama":   "llama3.2:latest",
+    "mistral": "mistral:latest",
+    "phi":     "phi4:latest"
+  }
+}

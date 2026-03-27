@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "navy-ai"
+version = "4.0.0"
+description = "Navy - AI-powered persistent CLI agent with pentest tools"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+keywords = ["ai", "cli", "agent", "pentest", "mcp", "ollama"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Environment :: Console",
+    "Topic :: Security",
+    "Topic :: Utilities",
+]
+
+dependencies = [
+    "mcp>=1.0.0",
+    "rich>=13.0.0",
+    "duckduckgo-search>=6.0.0",
+]
+
+[project.optional-dependencies]
+ollama    = ["ollama>=0.2.0"]
+openai    = ["openai>=1.0.0"]
+gemini    = ["google-generativeai>=0.7.0"]
+anthropic = ["anthropic>=0.30.0"]
+all       = ["ollama>=0.2.0", "openai>=1.0.0", "google-generativeai>=0.7.0", "anthropic>=0.30.0"]
+
+[project.scripts]
+navy = "navy_cli:cli_entry"
+
+[tool.setuptools]
+py-modules = ["navy_cli", "navy_server"]
+
+[project.urls]
+"Source" = "https://github.com/yourusername/navy-ai"
+"Issues"  = "https://github.com/yourusername/navy-ai/issues"

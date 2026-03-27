@@ -1,0 +1,48 @@
+{
+  "_comment": "Navy configuration. All paths are relative to the Navy directory unless absolute.",
+
+  "server": {
+    "_comment": "MCP server / tool settings",
+
+    "command_timeout": 120,
+    "max_command_timeout": 1800,
+
+    "port_scan_timeout": 2,
+    "port_scan_max_ports": 500,
+    "port_scan_default_ports": "80,443,8080,22,21,25,3306,1433,3389,445,8443,8888,9200,6379,27017,5432,23,110,143,53",
+
+    "fetch_url_timeout": 15,
+    "fetch_url_max_chars": 8000,
+
+    "read_file_max_chars": 50000,
+    "search_files_max": 100,
+
+    "search_timeout": 15,
+    "search_max_results": 5,
+
+    "http_probe_timeout": 10,
+    "ssl_check_timeout": 10,
+
+    "subdomain_scan_timeout": 2,
+    "subdomain_scan_workers": 40,
+
+    "system_specs_timeout": 15,
+
+    "security_logs_timeout": 25,
+    "security_logs_max_events": 30,
+    "security_logs_max_output": 6000,
+
+    "file_list_max": 50
+  },
+
+  "cli": {
+    "_comment": "CLI behaviour settings",
+
+    "tool_output_truncate": 2000,
+    "max_turns": 15,
+    "default_ctx": 32768,
+
+    "audit_log": "navy_audit.log",
+    "sessions_dir": "navy_sessions"
+  }
+}
