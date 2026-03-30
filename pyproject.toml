@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "navy-ai"
-version = "4.0.4"
+version = "4.0.5"
 description = "Navy - AI-powered persistent CLI agent with pentest tools"
 readme = "README.md"
 license = "MIT"

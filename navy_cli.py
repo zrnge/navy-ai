@@ -219,8 +219,44 @@ class SessionManager:
 
 
 # --- CLI Config ---
+_DEFAULT_MODELS_CFG = {
+    "_comment": "Navy model configuration. Set your API keys here or via environment variables.",
+    "default": "qwen2.5:14b",
+    "providers": {
+        "_comment": "API keys for cloud providers. Leave empty string to use environment variables instead.",
+        "gemini":    {"api_key": "", "_api_key_env": "GEMINI_API_KEY"},
+        "openai":    {"api_key": "", "_api_key_env": "OPENAI_API_KEY"},
+        "anthropic": {"api_key": "", "_api_key_env": "ANTHROPIC_API_KEY"},
+    },
+    "presets": {
+        "_comment": "Short aliases you can use instead of full model names.",
+        "flash":   "gemini-1.5-flash",
+        "pro":     "gemini-1.5-pro",
+        "2flash":  "gemini-2.0-flash",
+        "gpt4o":   "gpt-4o",
+        "gpt4m":   "gpt-4o-mini",
+        "o3":      "o3",
+        "o4":      "o4-mini",
+        "sonnet":  "claude-sonnet-4-5",
+        "opus":    "claude-opus-4-5",
+        "haiku":   "claude-haiku-4-5",
+        "kimi":    "kimi-k2.5:cloud",
+        "qwen7":   "qwen2.5:7b",
+        "qwen14":  "qwen2.5:14b",
+        "qwen32":  "qwen2.5:32b",
+        "qwen72":  "qwen2.5:72b",
+        "code":    "deepseek-coder-v2:16b",
+        "ds":      "deepseek-r1:14b",
+        "llama":   "llama3.2:latest",
+        "mistral": "mistral:latest",
+        "phi":     "phi4:latest",
+    },
+}
+
+
 def _load_models_config() -> dict:
-    """Load models.json. Checks CWD, ~/.config/navy/, then the script/package directory."""
+    """Load models.json. Checks CWD, ~/.config/navy/, then the script/package directory.
+    Auto-creates ~/.config/navy/models.json on first run if not found anywhere."""
     _home_cfg = os.path.join(os.path.expanduser("~"), ".config", "navy")
     search_dirs = [os.getcwd(), _home_cfg, os.path.dirname(os.path.abspath(__file__))]
     for d in search_dirs:
@@ -231,7 +267,19 @@ def _load_models_config() -> dict:
                     return json.load(f)
         except Exception as e:
             log.warning("Could not load models.json from %s: %s", path, e)
-    return {"default": "", "providers": {}, "presets": {}}
+    # Not found anywhere — auto-create at ~/.config/navy/models.json
+    dest = os.path.join(_home_cfg, "models.json")
+    try:
+        os.makedirs(_home_cfg, exist_ok=True)
+        with open(dest, "w", encoding="utf-8") as f:
+            json.dump(_DEFAULT_MODELS_CFG, f, indent=2)
+        console.print(
+            f"[green]Created default config:[/] [cyan]{dest}[/]\n"
+            "[dim]Edit it to set your default model and API keys.[/]"
+        )
+    except Exception as e:
+        log.warning("Could not auto-create models.json: %s", e)
+    return _DEFAULT_MODELS_CFG
 
 
 def _resolve_model_alias(name: str, models_cfg: dict) -> str:
@@ -1020,7 +1068,7 @@ def cli_entry():
         pass
     except (FileNotFoundError, RuntimeError) as e:
         console.print(f"[red]{e}[/]")
-        import sys; sys.exit(1)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
