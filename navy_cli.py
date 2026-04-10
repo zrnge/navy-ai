@@ -936,6 +936,14 @@ class NavyCLI:
             "Example: curl -s <url> | grep -i 'password\\|insert\\|admin\\|user' "
             "For SQL dumps specifically: curl -s <url> | grep -i 'INSERT' to find credential rows. "
             "Never call the same URL twice with the same command — always change the approach.\n"
+            "   - SYSTEM INFO: For ANY question about drive size, disk usage, free space, RAM, CPU, GPU, uptime, "
+            "hostname, OS version, or any live system state — ALWAYS run execute_command first. "
+            "NEVER say 'I don't have access' or 'check it yourself'. You have execute_command — use it.\n"
+            "     Drive/disk: powershell Get-PSDrive or Get-CimInstance Win32_LogicalDisk\n"
+            "     Memory/CPU: powershell Get-CimInstance Win32_ComputerSystem or get_system_specs\n"
+            "   - REAL-TIME DATA: For current prices (gold, stocks, crypto, forex), weather, news, sports scores "
+            "or ANY live/today data — ALWAYS call search_web first. "
+            "NEVER say 'I don't have real-time access' without first trying search_web.\n"
             "   - GAMING: When asked 'good for gaming?', call get_system_specs() first, then assess GPU/RAM/CPU.\n"
             "   - SECURITY LOGS: For 'suspicious activity', 'defender logs', call get_security_logs() first.\n"
             "   - FILE SEARCH: Use search_files to find files by name or content before read_file.\n"
@@ -1272,7 +1280,7 @@ class NavyCLI:
         return env_info
 
     async def main_loop(self):
-        ver = "4.1.1"
+        ver = "4.1.2"
         console.print()
         console.print(Panel(
             f"[bold cyan]⚓  NAVY[/bold cyan]  [dim]v{ver}[/dim]\n"
