@@ -58,10 +58,119 @@ from rich.panel import Panel
 from rich.live import Live
 from rich.spinner import Spinner
 from rich.markdown import Markdown
-from rich.prompt import Confirm
 from rich.table import Table
+from rich.rule import Rule
+from rich.text import Text
 
 console = Console()
+
+_TOOL_ICONS = {
+    "execute_command":        "💻",
+    "read_file":              "📄",
+    "write_file":             "📝",
+    "search_files":           "🔍",
+    "fetch_url":              "🌐",
+    "search_web":             "🔎",
+    "scan_ports":             "🛰 ",
+    "http_probe":             "🌐",
+    "ssl_check":              "🔒",
+    "check_security_headers": "🛡 ",
+    "dns_lookup":             "📡",
+    "whois_lookup":           "📋",
+    "subdomain_scan":         "🗺 ",
+    "get_system_specs":       "🖥 ",
+    "get_security_logs":      "📜",
+}
+
+
+# ---- Arrow-key Yes/No picker ----
+def _confirm_arrow(label: str, default: bool = True) -> bool:
+    """Yes/No confirmation with ← → arrow keys. Falls back to y/n if not a TTY."""
+    import sys as _sys
+    if not _sys.stdin.isatty():
+        return default
+    sel = [1 if default else 0]  # list so closure can mutate; 0=No 1=Yes
+
+    def _draw():
+        no_str  = "\033[1;31m◀ No \033[0m" if sel[0] == 0 else "\033[2m  No \033[0m"
+        yes_str = "\033[1;32m Yes ▶\033[0m" if sel[0] == 1 else "\033[2m Yes  \033[0m"
+        _sys.stdout.write(f"\r  {label}   {no_str}   {yes_str}  ")
+        _sys.stdout.flush()
+
+    _sys.stdout.write("\n")
+    _draw()
+
+    try:
+        if _sys.platform == "win32":
+            import msvcrt
+            while True:
+                ch = msvcrt.getwch()
+                if ch in ('\x00', '\xe0'):
+                    arrow = msvcrt.getwch()
+                    if arrow == 'K':    sel[0] = 0; _draw()
+                    elif arrow == 'M':  sel[0] = 1; _draw()
+                elif ch in ('\r', '\n'):
+                    _sys.stdout.write("\n"); return sel[0] == 1
+                elif ch.lower() == 'y': _sys.stdout.write("\n"); return True
+                elif ch.lower() == 'n': _sys.stdout.write("\n"); return False
+                elif ch == '\x03':      _sys.stdout.write("\n"); raise KeyboardInterrupt
+        else:
+            import tty as _tty, termios as _termios
+            fd = _sys.stdin.fileno()
+            old = _termios.tcgetattr(fd)
+            try:
+                _tty.setraw(fd)
+                while True:
+                    ch = _sys.stdin.read(1)
+                    if ch == '\x1b':
+                        seq = _sys.stdin.read(2)
+                        if seq == '[D':   sel[0] = 0; _draw()
+                        elif seq == '[C': sel[0] = 1; _draw()
+                    elif ch in ('\r', '\n'): return sel[0] == 1
+                    elif ch.lower() == 'y': return True
+                    elif ch.lower() == 'n': return False
+                    elif ch == '\x03':      raise KeyboardInterrupt
+            finally:
+                _termios.tcsetattr(fd, _termios.TCSADRAIN, old)
+                _sys.stdout.write("\n"); _sys.stdout.flush()
+    except Exception:
+        # Any terminal error — fall back to default
+        return default
+
+
+# ---- Simple query detection ----
+_SIMPLE_PREFIXES = (
+    "what is ", "what's ", "what are ", "who is ", "who are ",
+    "how does ", "how do ", "how is ", "why is ", "why does ",
+    "when is ", "when did ", "where is ", "tell me about ",
+    "explain ", "define ", "describe ", "what does ",
+    "can you explain", "do you know", "what's the difference",
+    "what is the difference", "is there a ",
+)
+_SIMPLE_GREETINGS = frozenset({
+    "hi", "hello", "hey", "thanks", "thank you", "ok", "okay",
+    "cool", "nice", "got it", "understood", "great", "perfect", "good",
+    "yes", "no", "sure", "alright",
+})
+_TOOL_HINTS = (
+    "file", "folder", "directory", "scan", "port", "network",
+    "run ", "execute", "install", "process", "service", "log",
+    "find ", "search", "list ", "show me", "my ", "this machine",
+    "the system", "exploit", "hack", "ctf", "shell", "reverse",
+    "payload", "upload", "download", "start ", "open ",
+)
+
+def _is_simple_query(text: str) -> bool:
+    """True for conversational/factual questions that don't need any tools."""
+    t = text.strip().lower().rstrip("?!. ")
+    if t in _SIMPLE_GREETINGS:
+        return True
+    if len(text) > 160:
+        return False
+    if not any(text.lower().startswith(p) for p in _SIMPLE_PREFIXES):
+        return False
+    # Exclude if it asks about something tool-related
+    return not any(h in text.lower() for h in _TOOL_HINTS)
 
 
 # --- Provider Detection ---
@@ -218,6 +327,74 @@ class SessionManager:
             f.write("\n".join(lines))
 
 
+# --- Agent Planner / State Tracker ---
+class AgentPlanner:
+    """Tracks a multi-step plan derived from the AI's <thinking> block."""
+
+    def __init__(self):
+        self.steps: list = []
+        self.done: list = []
+        self.current: int = 0
+
+    def reset(self):
+        self.steps = []
+        self.done = []
+        self.current = 0
+
+    def set_plan(self, steps: list):
+        self.steps = [str(s).strip() for s in steps if str(s).strip()]
+        self.done = [False] * len(self.steps)
+        self.current = 0
+
+    def advance(self):
+        """Mark current step done and move pointer to next pending step."""
+        if 0 <= self.current < len(self.done):
+            self.done[self.current] = True
+        while self.current < len(self.steps) and self.done[self.current]:
+            self.current += 1
+
+    @property
+    def is_active(self) -> bool:
+        return bool(self.steps) and self.current < len(self.steps)
+
+    @property
+    def is_complete(self) -> bool:
+        return bool(self.steps) and all(self.done)
+
+    def status_panel_text(self) -> str:
+        lines = []
+        for i, step in enumerate(self.steps):
+            if self.done[i]:
+                lines.append(f"  [green]✓[/green]  {step}")
+            elif i == self.current:
+                lines.append(f"  [bold cyan]▶[/bold cyan]  [bold]{step}[/bold]")
+            else:
+                lines.append(f"  [dim]○  {step}[/dim]")
+        return "\n".join(lines)
+
+    def status_line(self) -> str:
+        """Compact one-line status, e.g. after a tool call."""
+        parts = []
+        for i, step in enumerate(self.steps):
+            if self.done[i]:
+                parts.append(f"[green]✓ {step}[/green]")
+            elif i == self.current:
+                parts.append(f"[bold cyan]▶ {step}[/bold cyan]")
+            else:
+                parts.append(f"[dim]○ {step}[/dim]")
+        return "  ".join(parts)
+
+    def as_prompt_context(self) -> str:
+        if not self.steps:
+            return ""
+        lines = ["CURRENT PLAN (follow these steps in order):"]
+        for i, step in enumerate(self.steps):
+            mark = "✓ DONE" if self.done[i] else ("▶ NOW" if i == self.current else "○ PENDING")
+            lines.append(f"  Step {i + 1} [{mark}]: {step}")
+        lines.append("")
+        return "\n".join(lines)
+
+
 # --- CLI Config ---
 _DEFAULT_MODELS_CFG = {
     "_comment": "Navy model configuration. Set your API keys here or via environment variables.",
@@ -297,9 +474,10 @@ def _cli_config():
     default_model = models_cfg.get("default") or ""
 
     out = {
-        "tool_output_truncate": 2000,
+        "tool_output_truncate": 3000,
         "max_turns": 15,
         "default_ctx": 32768,
+        "max_response_tokens": 4096,
         "default_model": default_model,
         "audit_log": os.path.join(_runtime_dir, "navy_audit.log"),
         "sessions_dir": os.path.join(_runtime_dir, "navy_sessions"),
@@ -360,8 +538,11 @@ class NavyCLI:
         self.memory = ContextManager(max_tokens=ctx_size)
         self.audit = AuditLogger(self._cli_cfg["audit_log"])
         self.sessions = SessionManager(self._cli_cfg["sessions_dir"])
-        # In-memory transcript for /export
         self._transcript = []
+        self._current_task: asyncio.Task | None = None
+        self.planner = AgentPlanner()
+        self._extra_turns: int = 0
+        self._dead_native_cmds: set = set()
 
     def _get_provider_key(self, provider: str) -> str:
         """Get API key: models.json providers section first, then environment variable."""
@@ -428,6 +609,7 @@ class NavyCLI:
     async def call_ai(self, system_prompt, history):
         full_messages = [{"role": "system", "content": system_prompt}] + history
         full_text = ""
+        max_tok = self._cli_cfg["max_response_tokens"]
 
         try:
             # --- Gemini ---
@@ -440,7 +622,7 @@ class NavyCLI:
                     {"role": "user" if m["role"] == "user" else "model", "parts": [str(m["content"])]}
                     for m in hist_for_gemini
                 ]
-                gen_config = genai.types.GenerationConfig(temperature=0.2)
+                gen_config = genai.types.GenerationConfig(temperature=0.2, max_output_tokens=max_tok)
 
                 def _gemini_stream():
                     buf = ""
@@ -462,6 +644,7 @@ class NavyCLI:
                         model=self.model,
                         messages=full_messages,
                         temperature=0.2,
+                        max_tokens=max_tok,
                         stream=True,
                     ):
                         delta = chunk.choices[0].delta.content or ""
@@ -472,14 +655,13 @@ class NavyCLI:
 
             # --- Anthropic ---
             elif self.provider == "anthropic":
-                # Anthropic needs system separate from messages
                 anth_msgs = [m for m in full_messages if m["role"] != "system"]
 
                 def _anthropic_stream():
                     buf = ""
                     with self._anthropic_client.messages.stream(
                         model=self.model,
-                        max_tokens=8192,
+                        max_tokens=max_tok,
                         system=system_prompt,
                         messages=anth_msgs,
                         temperature=0.2,
@@ -500,7 +682,7 @@ class NavyCLI:
                         async for chunk in await ollama_client.chat(
                             model=self.model,
                             messages=full_messages,
-                            options={"num_ctx": self.ctx_size, "temperature": 0.2},
+                            options={"num_ctx": self.ctx_size, "num_predict": max_tok, "temperature": 0.2},
                             stream=True,
                         ):
                             full_text += chunk.message.content or ""
@@ -513,10 +695,12 @@ class NavyCLI:
                             ollama.chat,
                             model=self.model,
                             messages=full_messages,
-                            options={"num_ctx": self.ctx_size, "temperature": 0.2},
+                            options={"num_ctx": self.ctx_size, "num_predict": max_tok, "temperature": 0.2},
                         )
                     full_text = resp["message"]["content"]
 
+        except asyncio.CancelledError:
+            raise  # propagate so main_loop can show "Interrupted"
         except Exception as e:
             return f"API ERROR: {e}"
 
@@ -589,15 +773,25 @@ class NavyCLI:
 
     def extract_response(self, text):
         reasoning = None
+        plan_steps = []
         think_match = re.search(r'<thinking>(.*?)</thinking>', text, re.DOTALL | re.IGNORECASE)
         if think_match:
             reasoning = think_match.group(1).strip()
+            # Extract <plan> block if present
+            plan_match = re.search(r'<plan>(.*?)</plan>', reasoning, re.DOTALL | re.IGNORECASE)
+            if plan_match:
+                for line in plan_match.group(1).strip().splitlines():
+                    line = re.sub(r'^[\d]+[.)]\s*', '', line.strip())   # strip "1." "1)"
+                    line = re.sub(r'^[-*•·]\s*', '', line).strip()      # strip "- " "* "
+                    if line:
+                        plan_steps.append(line)
+                reasoning = reasoning.replace(plan_match.group(0), "").strip()
             text = text.replace(think_match.group(0), "")
 
         clean_text = re.sub(r'```json', '', text, flags=re.IGNORECASE).replace('```', '').strip()
         candidate = self._find_json_in_text(clean_text)
         json_data = self._try_parse_json(candidate) if candidate else None
-        return reasoning, json_data, clean_text
+        return reasoning, plan_steps, json_data, clean_text
 
     def normalize_action(self, data):
         if not data:
@@ -629,11 +823,21 @@ class NavyCLI:
             normalized.append(step)
         return normalized
 
-    def _build_system_prompt(self, env_info: dict) -> str:
+    def _build_system_prompt(self, env_info: dict, plan_context: str = "") -> str:
         _is_windows = "windows" in env_info.get("os", "").lower()
+        # Dead native commands block — injected so AI never retries them bare
+        _dead_block = ""
+        if self._dead_native_cmds:
+            _dead_block = (
+                f"UNAVAILABLE NATIVE COMMANDS: {', '.join(sorted(self._dead_native_cmds))} "
+                "— NOT installed on this system. Do NOT run them bare. "
+                "On Windows use WSL (wsl -d kali-linux -- <tool>) instead.\n\n"
+            )
         _pentest_env_note = (
-            "   - WSL KALI: WSL has NO -c flag. To run Kali tools: wsl -d kali-linux -- bash -c \"command here\". "
-            "For nmap use IP/hostname only, NOT URLs (use 10.0.0.1 not http://10.0.0.1). Long scans may timeout at 120s.\n"
+            "   - WSL KALI: Run Kali tools directly — do NOT use bash -c (quoting breaks). "
+            "Correct: command=wsl, args=[\"-d\",\"kali-linux\",\"--\",\"gobuster\",\"dir\",\"-u\",\"http://...\",\"-w\",\"wordlist\",\"-t\",\"50\"]. "
+            "Wrong: wsl -d kali-linux -- bash -c \"gobuster ...\". "
+            "For nmap use IP/hostname only, NOT URLs. Long scans may timeout — set a higher timeout in the JSON.\n"
             if _is_windows else
             "   - LINUX PENTEST: You are already on Linux. Run tools DIRECTLY without any 'wsl' prefix "
             "(e.g. nmap 10.0.0.1, nikto -h http://10.0.0.1, gobuster dir -u ...). "
@@ -643,13 +847,37 @@ class NavyCLI:
             f"SYSTEM STATUS:\n"
             f"- OS: {env_info.get('os')} | Shell: {env_info.get('shell')}\n"
             f"- CWD: {env_info.get('cwd')}\n"
-            f"- FILES: {env_info.get('files_in_cwd')}\n\n"
-            "### INSTRUCTIONS ###\n"
+            f"- FILES: {env_info.get('files_in_cwd')}\n"
+            + (_dead_block if _dead_block else "")
+            + (f"\n{plan_context}" if plan_context else "")
+            + "\n### INSTRUCTIONS ###\n"
             "You are Navy, a powerful persistent CLI Agent. Be concise and action-oriented.\n"
             "1. MEMORY: You remember previous messages in the conversation.\n"
-            "2. FORMAT: Output <thinking>...</thinking> THEN immediately output JSON (no prose between).\n"
+            "2. ACT, DON'T SUGGEST: You have tools — USE THEM. Never output a command block and ask the user to run it.\n"
+            "   If something can be done with execute_command, write_file, fetch_url, or any tool — DO IT YOURSELF immediately.\n"
+            "   The ONLY exceptions are things that require an interactive terminal that must stay open (e.g. a netcat listener\n"
+            "   waiting for a connection) — for those, tell the user to run it in a separate window, then continue with your next step.\n"
+            "   Examples of what you must NEVER do:\n"
+            "   - Output 'Run this command: curl ...' and wait — just run it with execute_command.\n"
+            "   - Ask 'Want me to create the WAR file?' — just create it.\n"
+            "   - Output a Python script block and say 'run this' — just execute it with execute_command python -c '...'.\n"
+            "   - Say 'Let me do X' or 'Running now:' or 'Starting:' in a chat message and stop — just DO X immediately.\n"
+            "   - WSL COMMANDS: Pass each arg separately — do NOT use bash -c for single-tool commands.\n"
+            "     Good: {\"command\":\"wsl\",\"args\":[\"-d\",\"kali-linux\",\"--\",\"gobuster\",\"dir\",\"-u\",\"http://x\",\"-t\",\"50\"]}\n"
+            "     Bad:  {\"command\":\"wsl\",\"args\":[\"-d\",\"kali-linux\",\"--\",\"bash\",\"-c\",\"gobuster dir -u http://x -t 50\"]}\n"
+            "   - WSL PIPES: The | pipe operator is a shell feature. For piped WSL commands you MUST wrap in bash -c:\n"
+            "     Good: {\"command\":\"wsl\",\"args\":[\"-d\",\"kali-linux\",\"--\",\"bash\",\"-c\",\"curl -s http://x | grep -i password\"]}\n"
+            "     Bad:  {\"command\":\"wsl\",\"args\":[\"-d\",\"kali-linux\",\"--\",\"curl\",\"-s\",\"http://x\",\"|\",\"grep\",\"-i\",\"password\"]}\n"
+            "     (without bash -c, the | is consumed by Windows cmd and grep runs natively — not found)\n"
+            "3. FORMAT: Output <thinking>Your reasoning. For multi-step tasks, include a <plan> block inside thinking:\n"
+            "   <plan>\n"
+            "     Step 1: short action phrase\n"
+            "     Step 2: short action phrase\n"
+            "   </plan>\n"
+            "   Keep steps ≤ 6, each ≤ 10 words. Then output JSON immediately after </thinking>.\n"
+            "   </thinking> must appear before any JSON. No prose between </thinking> and the JSON.\n"
             "   - STOP EARLY: As soon as a tool result answers the user's question, use {\"action\": \"chat\"} immediately. Do NOT run extra commands to verify or reconfirm what you already know.\n"
-            "3. BASIC ACTIONS:\n"
+            "4. BASIC ACTIONS:\n"
             "   - {\"tool\": \"execute_command\", \"command\": \"...\", \"args\": [...]}\n"
             "   - {\"tool\": \"read_file\", \"path\": \"...\"}  (LOCAL files under CWD only)\n"
             "   - {\"tool\": \"fetch_url\", \"url\": \"...\"}  (web pages)\n"
@@ -659,20 +887,47 @@ class NavyCLI:
             "   - {\"tool\": \"get_system_specs\"}  — GPU/RAM/CPU (no args)\n"
             "   - {\"tool\": \"get_security_logs\"}  — Windows Security/Defender events (no args)\n"
             "   - {\"action\": \"chat\", \"message\": \"...\"}  — for greetings, answers, summaries\n"
-            "4. PENTEST TOOLS (authorized targets only):\n"
+            "5. PENTEST TOOLS (authorized targets only):\n"
             "   - {\"tool\": \"scan_ports\", \"host\": \"...\", \"ports\": \"1-1024,8080\"}  — supports ranges\n"
-            "   - {\"tool\": \"http_probe\", \"url\": \"...\"}  — HTTP status + security headers (handles self-signed certs)\n"
+            "   - {\"tool\": \"http_probe\", \"url\": \"...\"}  — HTTP status + headers (handles self-signed certs)\n"
             "   - {\"tool\": \"dns_lookup\", \"hostname\": \"...\"}\n"
             "   - {\"tool\": \"ssl_check\", \"host\": \"...\", \"port\": 443}  — cert validity, expiry, cipher\n"
-            "   - {\"tool\": \"check_security_headers\", \"url\": \"...\"}  — A-F grade for security headers\n"
+            "   - {\"tool\": \"check_security_headers\", \"url\": \"...\"}  — compliance/audit ONLY, NOT for CTF/exploitation\n"
             "   - {\"tool\": \"whois_lookup\", \"domain\": \"...\"}  — registrar, expiry, nameservers\n"
             "   - {\"tool\": \"subdomain_scan\", \"domain\": \"...\", \"extra_words\": \"word1,word2\"}  — DNS enumeration\n"
-            "5. EXPERT KNOWLEDGE:\n"
+            "6. EXPERT KNOWLEDGE:\n"
             "   - COMPILATION: C/C++ on Windows with MinGW/Sockets: gcc file.c -o file.exe -lws2_32 -liphlpapi\n"
             "   - WINDOWS: Prefer PowerShell for OS info (Get-PSDrive, Get-CimInstance); wmic is deprecated.\n"
-            "   - PENTEST WORKFLOW: scan_ports → http_probe → check_security_headers → ssl_check → subdomain_scan → whois_lookup.\n"
+            "   - RECON WORKFLOW (web audit): scan_ports → http_probe → ssl_check → subdomain_scan → whois_lookup.\n"
+            "     check_security_headers is for compliance audits ONLY — skip it during CTF/exploitation/active attacks.\n"
             "   - Do NOT use read_file for URLs; use fetch_url. Do NOT use wsl for native Linux tools.\n"
             + _pentest_env_note +
+            "   - COMMAND NOT FOUND: If a command returns 'not recognized', 'command not found', or 'No such file or directory',\n"
+            "     it is NOT installed on this OS. Never retry it bare. Immediately switch to the WSL equivalent:\n"
+            "     wsl -d kali-linux -- <tool> (on Windows). Do not try Python wrappers or net use as fallbacks first.\n"
+            "   - WSL FILE PATHS: Files downloaded inside WSL (smbclient get, wget, curl -o) live in the WSL filesystem.\n"
+            "     Read them with: wsl -d kali-linux -- cat /path/to/file\n"
+            "     NEVER look for them at C:\\, E:\\, or any Windows path — those paths don't contain WSL files.\n"
+            "   - SMBCLIENT SYNTAX: 'ls dir' only shows the dir entry, not its contents. To list a subdirectory use:\n"
+            "     smbclient ... -c 'cd dirname; ls'   OR   smbclient ... -c 'ls dirname\\\\'\n"
+            "     To read a file directly: smbclient ... -c 'more dir/file.txt' (prints to stdout — no download needed).\n"
+            "     To download: smbclient ... -c 'get dir/file.txt' then read with: wsl -d kali-linux -- cat /tmp/file.txt\n"
+            "   - ATTACKER IP: When creating reverse shells or payloads, ALWAYS ask the user for their attacker/listener IP "
+            "first if it is not already known. Do NOT hardcode a placeholder; the shell must connect back to the right IP.\n"
+            "   - PAYLOAD USAGE: After writing any exploit file (shell.jsp, shell.py, shell.war, etc.), do NOT ask the user "
+            "if they want you to package/deploy it — just do it. Package the WAR, run the deploy curl, trigger the shell. "
+            "Only pause to tell the user to start a listener in a separate window (since that requires an open terminal).\n"
+            "   - WAR FILES: A valid Tomcat WAR requires WEB-INF/web.xml inside it. When creating a WAR, always write "
+            "WEB-INF/web.xml first then package both files: "
+            "zip -r shell.war shell.jsp WEB-INF/ (on Linux) or use Python zipfile to add both paths.\n"
+            "   - OS CONSISTENCY: The host OS is shown in SYSTEM STATUS. When running on Windows and attacking a Linux "
+            "target, netcat listeners and shell commands for the *attacker side* must match the host OS. "
+            "On Windows use: ncat or ncat.exe for listeners; avoid /dev/null, use nul instead.\n"
+            "   - TRUNCATED OUTPUT: If a tool result ends with '... (truncated)', the file is too large to read whole. "
+            "Do NOT re-fetch it — pipe it through grep instead to extract only what you need. "
+            "Example: curl -s <url> | grep -i 'password\\|insert\\|admin\\|user' "
+            "For SQL dumps specifically: curl -s <url> | grep -i 'INSERT' to find credential rows. "
+            "Never call the same URL twice with the same command — always change the approach.\n"
             "   - GAMING: When asked 'good for gaming?', call get_system_specs() first, then assess GPU/RAM/CPU.\n"
             "   - SECURITY LOGS: For 'suspicious activity', 'defender logs', call get_security_logs() first.\n"
             "   - FILE SEARCH: Use search_files to find files by name or content before read_file.\n"
@@ -681,6 +936,14 @@ class NavyCLI:
 
     async def _process_input(self, session, user_in: str, env_info: dict = None) -> dict:
         """Run the AI agent loop for a single user input. Returns updated env_info."""
+        try:
+            return await self._process_input_inner(session, user_in, env_info)
+        except asyncio.CancelledError:
+            raise
+        except KeyboardInterrupt:
+            raise asyncio.CancelledError()
+
+    async def _process_input_inner(self, session, user_in: str, env_info: dict = None) -> dict:
         # --- Update env info ---
         try:
             res = await session.call_tool("get_environment_metadata", {})
@@ -690,32 +953,79 @@ class NavyCLI:
             if env_info is None:
                 env_info = {}
 
-        sys_prompt = self._build_system_prompt(env_info)
         self.memory.add("user", user_in)
         self.audit.log_user(user_in)
 
-        max_turns = self._cli_cfg["max_turns"]
+        # --- Simple query fast path ---
+        if _is_simple_query(user_in):
+            simple_prompt = (
+                "You are Navy, a knowledgeable AI assistant. "
+                "Answer the question directly and concisely in plain text. "
+                "No JSON, no tool calls, no markdown headers — just a clear conversational answer."
+            )
+            answer = await self.call_ai(simple_prompt, self.memory.get_history())
+            if not answer.startswith("API ERROR:"):
+                self.memory.add("assistant", answer)
+                self.audit.log_assistant(answer)
+                console.print(Panel(Markdown(answer), title="[bold cyan]⚓ Navy[/]", border_style="cyan", padding=(0, 1)))
+                return env_info
+
+        # --- Reset planner for this query ---
+        self.planner.reset()
+
+        max_turns = self._cli_cfg["max_turns"] + self._extra_turns
+        self._extra_turns = 0  # consume extra turns for this call
         turn = 0
         retry_count = 0
-        last_cmd_hash = None
+        recent_tool_calls = []   # rolling window: (cmd_hash, result_hash) pairs — loop only if same result too
+        loop_stop_turns = 0      # how many remaining turns after a loop stop (0 = no limit)
+        _plan_shown = False      # show plan panel only on first extraction
 
         while turn < max_turns:
+            if loop_stop_turns and turn >= loop_stop_turns:
+                console.print("[bold red]⚠  Agent could not break the loop — stopping.[/]")
+                break
             turn += 1
+            # Rebuild system prompt each turn so plan context stays current
+            sys_prompt = self._build_system_prompt(env_info, self.planner.as_prompt_context())
             try:
                 ai_msg = await self.call_ai(sys_prompt, self.memory.get_history())
-            except KeyboardInterrupt:
-                console.print("[red]Aborted[/]")
-                break
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                raise asyncio.CancelledError()
             if ai_msg.startswith("API ERROR:"):
+                # Context too long — prune history and retry once
+                if "context length" in ai_msg.lower() or "prompt too long" in ai_msg.lower() or "max context" in ai_msg.lower():
+                    console.print("[yellow]⚠  Context too long — trimming history and retrying...[/]")
+                    h = self.memory.get_history()
+                    # Drop oldest 25% of messages (min 2) to make room
+                    drop = max(2, len(h) // 4)
+                    self.memory.replace_history(h[drop:])
+                    turn -= 1  # don't count this as a turn
+                    continue
                 console.print(f"[bold red]{ai_msg}[/]")
                 break
 
-            reason, data, raw_text = self.extract_response(ai_msg)
+            reason, plan_steps, data, raw_text = self.extract_response(ai_msg)
+
+            # Initialize planner from first <plan> block we see
+            if plan_steps and not _plan_shown:
+                self.planner.set_plan(plan_steps)
+                _plan_shown = True
+                console.print(Panel(
+                    self.planner.status_panel_text(),
+                    title="[bold blue]📋 Plan[/bold blue]",
+                    border_style="blue",
+                    expand=False,
+                    padding=(0, 2),
+                ))
 
             if reason:
                 console.print(Panel(
-                    Markdown(reason), title="[magenta]Thinking[/]",
-                    border_style="magenta", expand=False,
+                    Text(reason, style="dim"),
+                    title="[dim]💭 thinking[/dim]",
+                    border_style="dim",
+                    expand=False,
+                    padding=(0, 1),
                 ))
 
             if not data:
@@ -728,9 +1038,16 @@ class NavyCLI:
                         retry_count += 1
                         continue
                     else:
-                        console.print("[red]Agent stuck in planning loop. Try rephrasing.[/]")
+                        console.print("[bold red]⚠  Agent stuck — try rephrasing your request.[/]")
                         break
-                console.print(Panel(Markdown(ai_msg), title="[blue]Navy[/]", border_style="blue"))
+                # Suppress empty panels — blank AI response treated as a nudge
+                if not ai_msg.strip():
+                    if retry_count < 2:
+                        self.memory.add("user", "System: Your last response was empty. Output a JSON action or {\"action\":\"chat\"} now.")
+                        retry_count += 1
+                        continue
+                    break
+                console.print(Panel(Markdown(ai_msg), title="[bold cyan]⚓ Navy[/]", border_style="cyan", padding=(0, 1)))
                 self.memory.add("assistant", ai_msg)
                 self.audit.log_assistant(ai_msg)
                 break
@@ -749,11 +1066,38 @@ class NavyCLI:
                 # CHAT
                 if action_type == "chat":
                     msg = (step.get("message") or step.get("content") or "").strip()
+                    # Deduplicate: models sometimes repeat the same sentence twice
+                    half = len(msg) // 2
+                    if half > 20 and msg[:half].strip() == msg[half:].strip():
+                        msg = msg[:half].strip()
                     if not msg and reason:
                         msg = reason[:800] + ("..." if len(reason) > 800 else "")
                     if not msg:
                         msg = "See the output above, or ask again with more detail."
-                    console.print(Panel(Markdown(msg), title="[blue]Navy[/]", border_style="blue"))
+                    # Detect "placeholder" messages — AI announcing intent but not acting.
+                    # e.g. "Let me run the scan:", "Running now:", "I'll do it:"
+                    _placeholder_phrases = (
+                        "let me", "i'll ", "i will ", "running now", "starting now",
+                        "i'm going to", "i am going to", "let's ", "let us ",
+                    )
+                    _is_placeholder = (
+                        len(msg) < 250
+                        and (
+                            msg.rstrip().endswith(":")
+                            or any(msg.lower().startswith(p) for p in _placeholder_phrases)
+                            or any(p in msg.lower()[:80] for p in _placeholder_phrases)
+                        )
+                    )
+                    if _is_placeholder and retry_count < 2:
+                        self.memory.add("assistant", msg)
+                        self.memory.add("user", "System: Stop announcing — execute the action now with the appropriate tool JSON.")
+                        retry_count += 1
+                        continue
+                    # Skip truly empty chat responses
+                    if not msg.strip():
+                        task_completed = True
+                        break
+                    console.print(Panel(Markdown(msg), title="[bold cyan]⚓ Navy[/]", border_style="cyan", padding=(0, 1)))
                     self.memory.add("assistant", msg)
                     self.audit.log_assistant(msg)
                     task_completed = True
@@ -763,38 +1107,40 @@ class NavyCLI:
                 if not tool:
                     continue
 
-                # Loop detection
+                # Loop detection — rolling window: trigger only when SAME command AND SAME result
                 if tool == "execute_command":
-                    current_hash = f"{step.get('command')}-{step.get('args')}"
-                    if current_hash == last_cmd_hash:
-                        console.print("[bold red]Loop detected: stopping repetitive command.[/]")
-                        tool_outputs.append("System: You already ran this command. Stop and use 'chat' to report to the user.")
-                        continue
-                    last_cmd_hash = current_hash
+                    _cmd_hash = f"execute_command::{step.get('command')}::{step.get('args')}"
+                else:
+                    _cmd_hash = f"{tool}::{json.dumps({k: v for k, v in step.items() if k not in ['tool','action']}, sort_keys=True)}"
+                # result_hash will be filled in after the tool call; store placeholder for now
+                _pending_cmd_hash = _cmd_hash
 
                 # Confirmations
                 if not self.skip_confirm:
                     if tool == "execute_command":
                         cmd_display = step.get("command", "") + " " + " ".join(str(a) for a in step.get("args", []))
-                        if not Confirm.ask(f"Run command? [dim]{cmd_display.strip()}[/]"):
+                        if not _confirm_arrow(f"💻 Run  {cmd_display.strip()[:80]}"):
                             tool_outputs.append("System: User declined execute_command.")
                             continue
                     elif tool == "write_file":
-                        if not Confirm.ask(f"Write file [dim]{step.get('path', '?')}[/]?"):
+                        if not _confirm_arrow(f"📝 Write  {step.get('path', '?')}"):
                             tool_outputs.append("System: User declined write_file.")
                             continue
                     elif tool in ("scan_ports", "subdomain_scan"):
+                        icon = _TOOL_ICONS.get(tool, "🔧")
                         target = step.get("host") or step.get("domain") or "?"
-                        if not Confirm.ask(f"[yellow]{tool}[/] on [dim]{target}[/]? (authorized targets only)"):
+                        if not _confirm_arrow(f"{icon} {tool}  {target}  (authorized targets only)"):
                             tool_outputs.append(f"System: User declined {tool}.")
                             continue
                     elif tool in ("http_probe", "ssl_check", "check_security_headers", "whois_lookup"):
+                        icon = _TOOL_ICONS.get(tool, "🔧")
                         target = step.get("url") or step.get("host") or step.get("domain") or "?"
-                        if not Confirm.ask(f"[yellow]{tool}[/] on [dim]{target}[/]? (authorized only)"):
+                        if not _confirm_arrow(f"{icon} {tool}  {target}  (authorized only)"):
                             tool_outputs.append(f"System: User declined {tool}.")
                             continue
 
-                console.print(f"[bold yellow]>> Executing: {tool}[/]")
+                icon = _TOOL_ICONS.get(tool, "🔧")
+                console.print(f"[bold yellow]{icon} {tool}[/]")
 
                 try:
                     if tool == "execute_command":
@@ -835,13 +1181,70 @@ class NavyCLI:
                     result_text = res.content[0].text.strip()
                     is_error = "ERROR" in result_text or bool(re.search(r"EXIT CODE\s+[1-9]", result_text))
                     color = "red" if is_error else "green"
+                    icon = _TOOL_ICONS.get(tool, "🔧")
                     disp = result_text[:700] + "..." if len(result_text) > 700 else result_text
-                    console.print(Panel(disp, title=f"Output: {tool}", border_style=color))
+                    console.print(Panel(
+                        disp,
+                        title=f"[bold {color}]{icon} {tool}[/]",
+                        border_style=color,
+                        padding=(0, 1),
+                    ))
                     self.audit.log_tool(tool, result_text)
+
+                    # --- Result-aware loop detection ---
+                    _result_hash = result_text[:120]
+                    _call_sig = (_pending_cmd_hash, _result_hash)
+                    recent_tool_calls.append(_call_sig)
+                    if len(recent_tool_calls) > 8:
+                        recent_tool_calls.pop(0)
+                    if recent_tool_calls.count(_call_sig) >= 2:
+                        console.print("[bold red]⚠  Loop detected: same command, same result. Stopping.[/]")
+                        last_outputs = "\n".join(tool_outputs[-3:]) if tool_outputs else "No new results."
+                        _loop_hint = ""
+                        if tool in ("fetch_url", "execute_command"):
+                            _loop_hint = (
+                                " The output was likely truncated. "
+                                "Pipe through grep to extract only what you need, or use a different subcommand."
+                            )
+                        self.memory.add("user", (
+                            f"System: LOOP STOPPED. '{tool}' returned the same result every time.{_loop_hint} "
+                            f"Do NOT call '{tool}' with the same arguments again. "
+                            f"Last result snippet:\n{last_outputs[:500]}\n"
+                            "Change your approach: different tool, different args, or pipe through grep. "
+                            "Then use {\"action\": \"chat\"} to report findings."
+                        ))
+                        recent_tool_calls.clear()
+                        loop_stop_turns = turn + 2
+                        retry_count = 0
+                        break
+
+                    # --- Track dead native commands (not installed on this OS) ---
+                    _dead_patterns = (
+                        "is not recognized as an internal or external command",
+                        "command not found",
+                        "no such file or directory",
+                    )
+                    if tool == "execute_command" and any(p in result_text.lower() for p in _dead_patterns):
+                        _dead_cmd = step.get("command", "")
+                        if _dead_cmd and "wsl" not in _dead_cmd.lower():
+                            self._dead_native_cmds.add(_dead_cmd)
+
+                    # Advance planner on successful tool calls
+                    if not is_error and self.planner.is_active:
+                        self.planner.advance()
+                        if len(self.planner.steps) > 1:
+                            console.print(f"  {self.planner.status_line()}")
 
                     truncate = self._cli_cfg["tool_output_truncate"]
                     summary = result_text if len(result_text) <= truncate else result_text[:truncate] + "\n... (truncated)"
                     tool_outputs.append(f"Tool: {tool}\nResult: {summary}")
+
+                    # --- STOP EARLY nudge: short non-error result likely answers the question ---
+                    if not is_error and len(result_text) < 300 and turn >= 1:
+                        tool_outputs.append(
+                            "System: The above result is short and may fully answer the question. "
+                            "If it does, use {\"action\": \"chat\"} immediately with the answer — do NOT run another command."
+                        )
 
                 except Exception as e:
                     err = f"System Error calling {tool}: {e}"
@@ -857,18 +1260,25 @@ class NavyCLI:
                     combined = combined[:limit] + "\n... (output truncated)"
                 self.memory.add("user", combined)
         else:
-            console.print(f"[bold yellow]Max turns ({max_turns}) reached. Try rephrasing or breaking into smaller steps.[/]")
+            console.print(f"[bold yellow]⚠  Max turns ({max_turns}) reached — type [bold]continue[/bold] to give me more turns.[/]")
         return env_info
 
     async def main_loop(self):
-        console.print(Panel.fit(
-            f"[bold cyan]NAVY PRO[/bold cyan] [dim]v4.0[/dim]\n"
-            f"[dim]Model: {self.model} ({self.provider})[/dim]\n"
-            f"[dim]Audit: {self._cli_cfg['audit_log']}[/dim]\n"
-            f"[dim]Config: config.json  |  Models: models.json[/dim]\n"
-            f"[dim]Commands: /help  /models  model <alias>  /save  /load  /sessions  /export  /reset[/dim]",
+        ver = "4.1.0"
+        console.print()
+        console.print(Panel(
+            f"[bold cyan]⚓  NAVY[/bold cyan]  [dim]v{ver}[/dim]\n"
+            f"\n"
+            f"  [dim]Model   [/dim][bold white]{self.model}[/bold white]  [dim]·  {self.provider}[/dim]\n"
+            f"  [dim]Context [/dim][white]{self.ctx_size:,} tokens[/white]  [dim]·  Audit  on[/dim]\n"
+            f"\n"
+            f"  [dim]/help · /models · model <alias> · /save · /reset[/dim]\n"
+            f"  [dim]Ctrl+C  interrupt  ·  exit / quit  to leave[/dim]",
             border_style="cyan",
+            expand=False,
+            padding=(0, 2),
         ))
+        console.print()
 
         async with stdio_client(self.server_params) as (read, write):
             async with ClientSession(read, write) as session:
@@ -882,9 +1292,15 @@ class NavyCLI:
                     log.debug("Initial env metadata failed: %s", e)
 
                 while True:
+                    # --- Prompt ---
                     try:
                         cwd_display = env_info.get("cwd", ".")
-                        user_in = console.input(f"\n[bold green]navy[/] [dim]in[/] [blue]{cwd_display}[/] > ").strip()
+                        home = os.path.expanduser("~")
+                        if cwd_display.startswith(home):
+                            cwd_display = "~" + cwd_display[len(home):]
+                        user_in = console.input(
+                            f"\n[bold cyan]⚓[/bold cyan] [blue]{cwd_display}[/blue] [bold white]❯[/bold white] "
+                        ).strip()
                     except KeyboardInterrupt:
                         console.print("")
                         continue
@@ -894,122 +1310,158 @@ class NavyCLI:
                     if not user_in:
                         continue
 
-                    # Save readline history
-                    if _READLINE and _HISTORY_FILE:
-                        try:
-                            _readline.write_history_file(_HISTORY_FILE)
-                        except Exception:
-                            pass
+                    # Wrap everything so Ctrl+C never kills the session
+                    try:
+                        if _READLINE and _HISTORY_FILE:
+                            try:
+                                _readline.write_history_file(_HISTORY_FILE)
+                            except Exception:
+                                pass
 
-                    if user_in.lower() in ["exit", "quit"]:
-                        break
-                    if user_in.lower() in ["cls", "clear"]:
-                        console.clear()
-                        continue
-
-                    cmd = user_in.strip()
-
-                    # --- Built-in commands ---
-                    if cmd.lower() in ["/help", "help"]:
-                        table = Table(title="Navy Commands", border_style="cyan", show_header=True)
-                        table.add_column("Command", style="cyan")
-                        table.add_column("Description")
-                        table.add_row("model <name|alias>", "Switch AI model — use full name or alias from models.json")
-                        table.add_row("/models", "List all model presets from models.json")
-                        table.add_row("/reset", "Clear conversation memory")
-                        table.add_row("/save [name]", "Save current session for later reload")
-                        table.add_row("/sessions", "List saved sessions")
-                        table.add_row("/load <name>", "Load a saved session")
-                        table.add_row("/export [file]", "Export conversation as Markdown transcript")
-                        table.add_row("clear / cls", "Clear terminal screen")
-                        table.add_row("exit / quit", "Exit Navy")
-                        console.print(table)
-                        continue
-
-                    # /models
-                    if cmd.lower() == "/models":
-                        presets = {k: v for k, v in self.models_cfg.get("presets", {}).items() if not k.startswith("_")}
-                        default = self.models_cfg.get("default", "?")
-                        table = Table(title="Model Presets  (models.json)", border_style="cyan")
-                        table.add_column("Alias", style="cyan")
-                        table.add_column("Full Model Name")
-                        table.add_column("Provider")
-                        for alias, full in sorted(presets.items()):
-                            prov = _detect_provider(full)
-                            marker = "  [green]← default[/]" if full == default else ""
-                            table.add_row(alias, full + marker, prov)
-                        console.print(table)
-                        console.print(f"[dim]Current: [bold]{self.model}[/] ({self.provider})  |  Default: {default}[/]")
-                        continue
-
-                    if cmd.lower() in ["/reset", "reset"]:
-                        self.memory = ContextManager(max_tokens=self.ctx_size)
-                        self._transcript = []
-                        console.print("[green]Conversation memory cleared.[/]")
-                        continue
-
-                    # /save [name]
-                    if cmd.lower().startswith("/save"):
-                        parts = cmd.split(None, 1)
-                        name = parts[1].strip() if len(parts) > 1 else None
-                        try:
-                            path = self.sessions.save(self.memory.get_history(), self.model, name)
-                            console.print(f"[green]Session saved to {path}[/]")
-                        except Exception as e:
-                            console.print(f"[red]Save failed: {e}[/]")
-                        continue
-
-                    # /sessions
-                    if cmd.lower() == "/sessions":
-                        sessions = self.sessions.list_sessions()
-                        if not sessions:
-                            console.print("[yellow]No saved sessions.[/]")
-                        else:
-                            table = Table(title="Saved Sessions", border_style="cyan")
-                            table.add_column("File", style="cyan")
-                            table.add_column("Saved")
-                            table.add_column("Model")
-                            table.add_column("Messages", justify="right")
-                            for s in sessions:
-                                table.add_row(s["file"], s["saved"], s["model"], str(s["messages"]))
-                            console.print(table)
-                        continue
-
-                    # /load <name>
-                    if cmd.lower().startswith("/load"):
-                        parts = cmd.split(None, 1)
-                        if len(parts) < 2:
-                            console.print("[yellow]Usage: /load <session-name>[/]")
+                        if user_in.lower() in ["exit", "quit"]:
+                            break
+                        if user_in.lower() in ["cls", "clear"]:
+                            console.clear()
                             continue
+
+                        cmd = user_in.strip()
+
+                        # --- Built-in commands ---
+                        if cmd.lower() in ["/help", "help"]:
+                            table = Table(title="Navy Commands", border_style="cyan", show_header=True)
+                            table.add_column("Command", style="cyan")
+                            table.add_column("Description")
+                            table.add_row("model <name|alias>", "Switch AI model — use full name or alias from models.json")
+                            table.add_row("/models", "List all model presets from models.json")
+                            table.add_row("continue / /continue", "Give the agent +10 more turns to finish a task")
+                            table.add_row("/reset", "Clear conversation memory")
+                            table.add_row("/save [name]", "Save current session for later reload")
+                            table.add_row("/sessions", "List saved sessions")
+                            table.add_row("/load <name>", "Load a saved session")
+                            table.add_row("/export [file]", "Export conversation as Markdown transcript")
+                            table.add_row("clear / cls", "Clear terminal screen")
+                            table.add_row("exit / quit", "Exit Navy")
+                            console.print(table)
+                            continue
+
+                        if cmd.lower() == "/models":
+                            presets = {k: v for k, v in self.models_cfg.get("presets", {}).items() if not k.startswith("_")}
+                            default = self.models_cfg.get("default", "?")
+                            table = Table(title="Model Presets  (models.json)", border_style="cyan")
+                            table.add_column("Alias", style="cyan")
+                            table.add_column("Full Model Name")
+                            table.add_column("Provider")
+                            for alias, full in sorted(presets.items()):
+                                prov = _detect_provider(full)
+                                marker = "  [green]← default[/]" if full == default else ""
+                                table.add_row(alias, full + marker, prov)
+                            console.print(table)
+                            console.print(f"[dim]Current: [bold]{self.model}[/] ({self.provider})  |  Default: {default}[/]")
+                            continue
+
+                        if cmd.lower() in ["/reset", "reset"]:
+                            self.memory = ContextManager(max_tokens=self.ctx_size)
+                            self._transcript = []
+                            console.print("[green]Conversation memory cleared.[/]")
+                            continue
+
+                        if cmd.lower().startswith("/save"):
+                            parts = cmd.split(None, 1)
+                            name = parts[1].strip() if len(parts) > 1 else None
+                            try:
+                                path = self.sessions.save(self.memory.get_history(), self.model, name)
+                                console.print(f"[green]Session saved to {path}[/]")
+                            except Exception as e:
+                                console.print(f"[red]Save failed: {e}[/]")
+                            continue
+
+                        if cmd.lower() == "/sessions":
+                            sessions = self.sessions.list_sessions()
+                            if not sessions:
+                                console.print("[yellow]No saved sessions.[/]")
+                            else:
+                                table = Table(title="Saved Sessions", border_style="cyan")
+                                table.add_column("File", style="cyan")
+                                table.add_column("Saved")
+                                table.add_column("Model")
+                                table.add_column("Messages", justify="right")
+                                for s in sessions:
+                                    table.add_row(s["file"], s["saved"], s["model"], str(s["messages"]))
+                                console.print(table)
+                            continue
+
+                        if cmd.lower().startswith("/load"):
+                            parts = cmd.split(None, 1)
+                            if len(parts) < 2:
+                                console.print("[yellow]Usage: /load <session-name>[/]")
+                                continue
+                            try:
+                                hist, loaded_model = self.sessions.load(parts[1].strip())
+                                self.memory.replace_history(hist)
+                                console.print(f"[green]Loaded session ({len(hist)} messages, model: {loaded_model or 'unknown'})[/]")
+                            except FileNotFoundError as e:
+                                console.print(f"[red]{e}[/]")
+                            continue
+
+                        if cmd.lower().startswith("/export"):
+                            parts = cmd.split(None, 1)
+                            fname = parts[1].strip() if len(parts) > 1 else f"navy_transcript_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+                            try:
+                                self.sessions.export_markdown(self.memory.get_history(), self.model, fname)
+                                console.print(f"[green]Transcript exported to {fname}[/]")
+                            except Exception as e:
+                                console.print(f"[red]Export failed: {e}[/]")
+                            continue
+
+                        if cmd.lower().startswith("model ") or cmd.lower().startswith("/model "):
+                            new_name = cmd.split(None, 1)[1].strip() if " " in cmd else ""
+                            if not new_name:
+                                console.print("[yellow]Usage: model <name>  e.g.  model gpt-4o[/]")
+                            elif self.switch_model(new_name):
+                                console.print(f"[green]Model set to [bold]{self.model}[/] (provider: {self.provider})[/]")
+                            continue
+
+                        if cmd.lower() in ("continue", "/continue"):
+                            self._extra_turns += 10
+                            user_in = (
+                                "Continue with the previous task. "
+                                "Do NOT re-scan or re-explain what was already found — "
+                                "pick up exactly at the next pending step."
+                            )
+                            console.print(f"[dim cyan]↺  +10 turns — resuming task...[/dim cyan]")
+                            # Fall through to AI agent below
+
+                        # --- AI agent ---
+                        self._current_task = asyncio.create_task(
+                            self._process_input(session, user_in, env_info)
+                        )
                         try:
-                            hist, loaded_model = self.sessions.load(parts[1].strip())
-                            self.memory.replace_history(hist)
-                            console.print(f"[green]Loaded session ({len(hist)} messages, model: {loaded_model or 'unknown'})[/]")
-                        except FileNotFoundError as e:
-                            console.print(f"[red]{e}[/]")
-                        continue
+                            env_info = await self._current_task
+                        except (KeyboardInterrupt, asyncio.CancelledError):
+                            # Cancel and AWAIT the task to fully drain the pending exception
+                            # before the next loop iteration — without this the CancelledError
+                            # or KeyboardInterrupt leaks into the next command's first await.
+                            if not self._current_task.done():
+                                self._current_task.cancel()
+                            try:
+                                await self._current_task
+                            except BaseException:
+                                # BaseException covers CancelledError AND KeyboardInterrupt
+                                pass
+                            console.print("\n[bold yellow]⏹  Interrupted[/bold yellow]")
+                        finally:
+                            self._current_task = None
 
-                    # /export [filename]
-                    if cmd.lower().startswith("/export"):
-                        parts = cmd.split(None, 1)
-                        fname = parts[1].strip() if len(parts) > 1 else f"navy_transcript_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
-                        try:
-                            self.sessions.export_markdown(self.memory.get_history(), self.model, fname)
-                            console.print(f"[green]Transcript exported to {fname}[/]")
-                        except Exception as e:
-                            console.print(f"[red]Export failed: {e}[/]")
-                        continue
-
-                    # model switch
-                    if cmd.lower().startswith("model ") or cmd.lower().startswith("/model "):
-                        new_name = cmd.split(None, 1)[1].strip() if " " in cmd else ""
-                        if not new_name:
-                            console.print("[yellow]Usage: model <name>  e.g.  model gpt-4o  or  model gemini-1.5-flash[/]")
-                        elif self.switch_model(new_name):
-                            console.print(f"[green]Model set to [bold]{self.model}[/] (provider: {self.provider})[/]")
-                        continue
-
-                    env_info = await self._process_input(session, user_in, env_info)
+                    except (KeyboardInterrupt, asyncio.CancelledError):
+                        # Ctrl+C during command dispatch (not during AI task)
+                        t, self._current_task = self._current_task, None
+                        if t and not t.done():
+                            t.cancel()
+                            try:
+                                await t
+                            except BaseException:
+                                pass
+                        console.print("\n[bold yellow]⏹  Interrupted — ready[/bold yellow]")
 
 
     async def run_once(self, query: str):

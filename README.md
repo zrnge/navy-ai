@@ -19,11 +19,15 @@
 
 - **Interactive & argument mode** — chat in a session or fire a one-liner from your terminal
 - **Multi-provider** — Ollama (local), OpenAI, Gemini, Anthropic, or any OpenAI-compatible endpoint
+- **Reasoning engine** — the agent generates a step-by-step plan before executing multi-step tasks and tracks progress visually
+- **Smart query routing** — simple factual questions answered instantly without tool overhead
+- **Arrow-key approval** — confirm or decline tool calls with ← → keys, no typing required
 - **Built-in pentest tools** — port scanner, SSL checker, HTTP prober, subdomain enum, WHOIS, and more
 - **MCP-based tool server** — extensible, runs as a local subprocess
 - **Session management** — save, load, and export conversations as Markdown
 - **Audit log** — every command and response is logged locally
 - **Dynamic timeouts** — long-running commands like `nmap -p-` get their own timeout budget
+- **Loop & dead-command detection** — stops runaway tool loops; remembers which native tools are unavailable and switches to WSL automatically
 
 ---
 
@@ -54,9 +58,9 @@ navy
 ```
 
 ```
-navy in /home/user > what ports are open on 10.0.0.1?
-navy in /home/user > summarise the files in this folder
-navy in /home/user > am i running the latest kernel?
+⚓ ~ ❯ what ports are open on 10.0.0.1?
+⚓ ~ ❯ summarise the files in this folder
+⚓ ~ ❯ am i running the latest kernel?
 ```
 
 ### Argument mode (single-shot)
@@ -82,6 +86,7 @@ navy --yes "what processes are using the most CPU"
 |---------|-------------|
 | `model <alias>` | Switch model mid-session |
 | `/models` | List all model aliases |
+| `continue` | Give the agent +10 more turns to finish a long task |
 | `/save [name]` | Save the current session |
 | `/load <name>` | Load a saved session |
 | `/sessions` | List saved sessions |
@@ -93,13 +98,13 @@ navy --yes "what processes are using the most CPU"
 
 ## Configuration
 
-On first run, create `config.json` and `models.json` in your working directory (or copy from the repo).
+On first run Navy auto-creates `~/.config/navy/models.json`. Edit it to set your default model and API keys.
 
-### `models.json` — set your default model and API keys
+### `models.json`
 
 ```json
 {
-  "default": "kimi-k2.5:cloud",
+  "default": "qwen2.5:14b",
   "providers": {
     "openai":    { "api_key": "" },
     "gemini":    { "api_key": "" },
@@ -130,6 +135,10 @@ export ANTHROPIC_API_KEY=sk-ant-...
   "server": {
     "command_timeout": 120,
     "max_command_timeout": 1800
+  },
+  "cli": {
+    "max_turns": 15,
+    "max_response_tokens": 4096
   }
 }
 ```
@@ -164,7 +173,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 Navy follows a structured recon workflow when given a target:
 
 ```
-scan_ports → http_probe → check_security_headers → ssl_check → subdomain_scan → whois_lookup
+scan_ports → http_probe → ssl_check → subdomain_scan → whois_lookup
 ```
 
 > **Important:** Only use pentest tools against targets you are authorized to test.

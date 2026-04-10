@@ -38,9 +38,10 @@
   "cli": {
     "_comment": "CLI behaviour settings",
 
-    "tool_output_truncate": 2000,
+    "tool_output_truncate": 3000,
     "max_turns": 15,
     "default_ctx": 32768,
+    "max_response_tokens": 4096,
 
     "audit_log": "navy_audit.log",
     "sessions_dir": "navy_sessions"

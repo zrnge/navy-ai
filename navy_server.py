@@ -857,8 +857,23 @@ def execute_command(json_command: str) -> str:
             return f"ERROR: Directory {new_path} not found."
 
         if isinstance(args, list):
+            # WSL pipe fix: if the AI passes "|" as an arg in a WSL command, the pipe is
+            # interpreted by Windows cmd BEFORE WSL sees it, so grep/head run natively (and fail).
+            # Auto-wrap the post-"--" portion in bash -c so the pipe stays inside WSL.
+            _str_args = [str(a) for a in args]
+            if cmd_raw.lower() in ("wsl", "wsl.exe") and "|" in _str_args:
+                try:
+                    sep = _str_args.index("--")
+                    _pre = _str_args[:sep + 1]          # e.g. ["-d", "kali-linux", "--"]
+                    _post = _str_args[sep + 1:]         # e.g. ["curl", "-s", "http://...", "|", "grep", ...]
+                    if "|" in _post:
+                        bash_cmd = " ".join(_post)      # join as-is — shell metacharacters stay intact
+                        args = _pre + ["bash", "-c", bash_cmd]
+                        _str_args = args
+                except ValueError:
+                    pass
             safe_args = []
-            for a in args:
+            for a in _str_args:
                 s_a = str(a).strip()
                 if not s_a or s_a in ('"', "'"):
                     continue
