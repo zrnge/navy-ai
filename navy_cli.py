@@ -1272,7 +1272,7 @@ class NavyCLI:
         return env_info
 
     async def main_loop(self):
-        ver = "4.1.0"
+        ver = "4.1.1"
         console.print()
         console.print(Panel(
             f"[bold cyan]⚓  NAVY[/bold cyan]  [dim]v{ver}[/dim]\n"
