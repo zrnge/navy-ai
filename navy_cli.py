@@ -153,11 +153,19 @@ _SIMPLE_GREETINGS = frozenset({
     "yes", "no", "sure", "alright",
 })
 _TOOL_HINTS = (
+    # filesystem / system actions
     "file", "folder", "directory", "scan", "port", "network",
     "run ", "execute", "install", "process", "service", "log",
     "find ", "search", "list ", "show me", "my ", "this machine",
     "the system", "exploit", "hack", "ctf", "shell", "reverse",
     "payload", "upload", "download", "start ", "open ",
+    # hardware / OS queries (need execute_command / get_system_specs)
+    "drive", "disk", "storage", "memory", "ram", "cpu", "gpu",
+    "size of", "capacity", "free space", "hard drive",
+    # real-time data (need search_web)
+    "price", "cost", "rate ", " now", "right now", "current",
+    "today", "latest", "live ", "weather", "stock", "crypto",
+    "bitcoin", "gold", "silver", "market", "exchange rate",
 )
 
 def _is_simple_query(text: str) -> bool:
